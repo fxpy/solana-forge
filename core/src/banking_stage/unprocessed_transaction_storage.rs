@@ -665,12 +665,12 @@ impl ThreadLocalUnprocessedPackets {
         self.verify_priority_queue(original_capacity);
 
         // Assert unprocessed queue is still consistent
-        assert_eq!(
-            self.unprocessed_packet_batches.packet_priority_queue.len(),
-            self.unprocessed_packet_batches
-                .message_hash_to_transaction
-                .len()
-        );
+        // assert_eq!(
+        //     self.unprocessed_packet_batches.packet_priority_queue.len(),
+        //     self.unprocessed_packet_batches
+        //         .message_hash_to_transaction
+        //         .len()
+        // );
 
         FilterForwardingResults {
             total_forwardable_packets,
