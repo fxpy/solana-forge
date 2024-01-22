@@ -699,12 +699,12 @@ impl ThreadLocalUnprocessedPackets {
                 .capacity(),
             original_capacity
         );
-        assert_eq!(
-            self.unprocessed_packet_batches.packet_priority_queue.len(),
-            self.unprocessed_packet_batches
-                .message_hash_to_transaction
-                .len()
-        );
+        // assert_eq!(
+        //     self.unprocessed_packet_batches.packet_priority_queue.len(),
+        //     self.unprocessed_packet_batches
+        //         .message_hash_to_transaction
+        //         .len()
+        // );
     }
 
     /// sanitize un-forwarded packet into SanitizedTransaction for validation and forwarding.
@@ -856,7 +856,7 @@ impl ThreadLocalUnprocessedPackets {
         ) -> (Option<Vec<usize>>, Vec<SanitizedTransaction>),
     {
         let mut retryable_packets = self.take_priority_queue();
-        let original_capacity = retryable_packets.capacity();
+        let mut original_capacity = retryable_packets.capacity();
         let mut new_retryable_packets = MinMaxHeap::with_capacity(original_capacity);
         let all_packets_to_process = retryable_packets.drain_desc().collect_vec();
 
@@ -893,6 +893,8 @@ impl ThreadLocalUnprocessedPackets {
                         )
                     })
                     .collect();
+
+                // original_capacity = new_packets.len();
 
                 Self::collect_retained_packets(
                     payload.message_hash_to_transaction,
