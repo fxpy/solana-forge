@@ -5,7 +5,7 @@ use {
     },
     solana_accounts_db::transaction_error_metrics::*,
     solana_poh::poh_recorder::BankStart,
-    solana_sdk::{clock::Slot, saturating_add_assign},
+    solana_sdk::{clock::Slot, saturating_add_assign, transaction::SanitizedTransaction},
     std::time::Instant,
 };
 
@@ -52,6 +52,8 @@ pub(crate) struct ProcessTransactionsSummary {
 
     // Breakdown of all the transaction errors from transactions passed for execution
     pub error_counters: TransactionErrorMetrics,
+
+    pub txs: Vec<SanitizedTransaction>
 }
 
 // Metrics describing packets ingested/processed in various parts of BankingStage during this
