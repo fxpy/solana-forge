@@ -5757,6 +5757,7 @@ dependencies = [
  "raptorq",
  "rayon",
  "rcgen",
+ "reqwest",
  "rolling-file",
  "rustc_version 0.4.0",
  "rustls",

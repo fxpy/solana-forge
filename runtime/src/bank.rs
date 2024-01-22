@@ -4305,6 +4305,20 @@ impl Bank {
         TransactionBatch::new(lock_results, self, Cow::Borrowed(txs))
     }
 
+    pub fn prepare_unlocked_sanitized_batch<'a, 'b>(
+        &'a self,
+        txs: &'b [SanitizedTransaction],
+    ) -> TransactionBatch<'a, 'b> {
+        let tx_account_lock_limit = self.get_transaction_account_lock_limit();
+        let mut lock_results = vec![];
+        for tx in txs {
+            let lock_result = tx.get_account_locks(tx_account_lock_limit).map(|_| ());
+            lock_results.push(lock_result);
+        }
+
+        TransactionBatch::new(lock_results, self, Cow::Borrowed(txs))
+    }
+
     /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
     /// limited packing status
     pub fn prepare_sanitized_batch_with_results<'a, 'b>(
@@ -4348,6 +4362,44 @@ impl Bank {
         assert!(self.is_frozen(), "simulation bank must be frozen");
 
         self.simulate_transaction_unchecked(transaction)
+    }
+
+    /// Run transactions against a frozen bank without committing the results
+    pub fn simulate_transactions(
+        &self,
+        transactions: &[SanitizedTransaction],
+    ) -> Vec<TransactionExecutionResult> {
+        self.simulate_transactions_unchecked(transactions)
+    }
+
+    pub fn simulate_transactions_unchecked(
+        &self,
+        transactions: &[SanitizedTransaction],
+    ) -> Vec<TransactionExecutionResult> {
+        let batch = self.prepare_unlocked_sanitized_batch(transactions);
+        let mut timings = ExecuteTimings::default();
+
+        let LoadAndExecuteTransactionsOutput {
+            loaded_transactions,
+            mut execution_results,
+            ..
+        } = self.load_and_execute_transactions(
+            &batch,
+            // After simulation, transactions will need to be forwarded to the leader
+            // for processing. During forwarding, the transaction could expire if the
+            // delay is not accounted for.
+            MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
+            false,
+            true,
+            true,
+            &mut timings,
+            None,
+            None,
+        );
+
+        debug!("simulate_transaction: {:?}", timings);
+
+        execution_results
     }
 
     /// Run transactions against a bank without committing the results; does not check if the bank
