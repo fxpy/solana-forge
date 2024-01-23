@@ -6,7 +6,7 @@ use {
     crossbeam_channel::{Receiver, RecvError, SendError, Sender},
     solana_poh::leader_bank_notifier::LeaderBankNotifier,
     solana_runtime::bank::Bank,
-    std::{sync::Arc, time::Duration},
+    std::{sync::Arc, time::{Duration, Instant}},
     thiserror::Error,
 };
 
@@ -42,14 +42,14 @@ impl ConsumeWorker {
         }
     }
 
-    pub fn run(self) -> Result<(), ConsumeWorkerError> {
+    pub fn run(self, bank_creation_time: &Instant) -> Result<(), ConsumeWorkerError> {
         loop {
             let work = self.consume_receiver.recv()?;
-            self.consume_loop(work)?;
+            self.consume_loop(work, bank_creation_time)?;
         }
     }
 
-    fn consume_loop(&self, work: ConsumeWork) -> Result<(), ConsumeWorkerError> {
+    fn consume_loop(&self, work: ConsumeWork, bank_creation_time: &Instant) -> Result<(), ConsumeWorkerError> {
         let Some(mut bank) = self.get_consume_bank() else {
             return self.retry_drain(work);
         };
@@ -62,14 +62,14 @@ impl ConsumeWorker {
                     return self.retry_drain(work);
                 }
             }
-            self.consume(&bank, work)?;
+            self.consume(&bank, work, bank_creation_time)?;
         }
 
         Ok(())
     }
 
     /// Consume a single batch.
-    fn consume(&self, bank: &Arc<Bank>, work: ConsumeWork) -> Result<(), ConsumeWorkerError> {
+    fn consume(&self, bank: &Arc<Bank>, work: ConsumeWork, bank_creation_time: &Instant) -> Result<(), ConsumeWorkerError> {
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
                 ExecuteAndCommitTransactionsOutput {
@@ -81,6 +81,8 @@ impl ConsumeWorker {
             bank,
             &work.transactions,
             &work.max_age_slots,
+            bank_creation_time
+            // self.
         );
 
         self.consumed_sender.send(FinishedConsumeWork {
@@ -241,7 +243,8 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let bank_creation_time = Instant::now();
+        let worker_thread = std::thread::spawn(move || worker.run(&bank_creation_time));
 
         let pubkey1 = Pubkey::new_unique();
 
@@ -282,7 +285,8 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let bank_creation_time = Instant::now();
+        let worker_thread = std::thread::spawn(move || worker.run(&bank_creation_time));
         poh_recorder.write().unwrap().set_bank(bank.clone(), false);
 
         let pubkey1 = Pubkey::new_unique();
@@ -324,7 +328,8 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let bank_creation_time = Instant::now();
+        let worker_thread = std::thread::spawn(move || worker.run(&bank_creation_time));
         poh_recorder.write().unwrap().set_bank(bank.clone(), false);
 
         let pubkey1 = Pubkey::new_unique();
@@ -369,7 +374,8 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let bank_creation_time = Instant::now();
+        let worker_thread = std::thread::spawn(move || worker.run(&bank_creation_time));
         poh_recorder.write().unwrap().set_bank(bank.clone(), false);
 
         let pubkey1 = Pubkey::new_unique();
