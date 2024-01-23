@@ -605,7 +605,7 @@ impl Consumer {
         }
 
         let (added_txs, time_simulate_us) = measure_us!(self.simulate_bundles(bank, bundles));
-        info!("{} time simulation time_simulate_us", added_txs.len());
+        info!("time simulation time_simulate_us {}", added_txs.len());
         info!("{} want addedd", added_txs.len());
 
         let mut txs = vec![];
@@ -615,9 +615,9 @@ impl Consumer {
         // }
 
         for tx in sanitized_transactions {
-            if !txs.contains(&tx) {
-                txs.push(tx);
-            }
+            // if !txs.contains(&tx) {
+                txs.push(tx.clone());
+            // }
         }
         
         let pre_results = std::iter::repeat(Ok(()));
