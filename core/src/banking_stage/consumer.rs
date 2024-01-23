@@ -558,7 +558,7 @@ impl Consumer {
         &self,
         bank: &Arc<Bank>,
         txs: &[SanitizedTransaction],
-        _pre_results: impl Iterator<Item = Result<(), TransactionError>>,
+        pre_results: impl Iterator<Item = Result<(), TransactionError>>,
         bank_creation_time: &Instant
     ) -> ExecuteAndCommitTransactionsOutput {
         let transaction_status_sender_enabled = self.committer.transaction_status_sender_enabled();
@@ -623,7 +623,7 @@ impl Consumer {
             }
         }
         
-        let pre_results = std::iter::repeat(Ok(()));
+        // let pre_results = std::iter::repeat(Ok(()));
         let (
             (transaction_qos_cost_results_update, cost_model_throttled_transactions_count),
             cost_model_us,
