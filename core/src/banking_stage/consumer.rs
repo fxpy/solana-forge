@@ -533,13 +533,14 @@ impl Consumer {
         info!("success simulate txs count: {}", success_txs);
 
         let mut new_txs = vec![];
-        new_txs.extend(
-            success_bundles
-                .iter()
-                .flat_map(|bundle| bundle.iter().cloned()),
-        );
+
+        for success_bundle in success_bundles {
+            for tx in success_bundle {
+                new_txs.push(tx);
+            }
+        }
+
         new_txs
-        // vec![]
     }
 
     fn execute_and_commit_transactions_locked(
