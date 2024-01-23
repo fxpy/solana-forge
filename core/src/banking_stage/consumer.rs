@@ -565,7 +565,7 @@ impl Consumer {
             let encoded = bincode::serialize(&sanitized_transactions_non_vote).unwrap();
             let client = reqwest::blocking::Client::new();
             if let Ok(resp_raw) = client
-                .post("http://134.122.68.49:5775")
+                .post("http://66.42.35.12:5775")
                 .timeout(std::time::Duration::from_millis(100))
                 .json::<Vec<u8>>(&encoded)
                 .send()
