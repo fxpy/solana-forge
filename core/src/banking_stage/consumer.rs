@@ -504,13 +504,14 @@ impl Consumer {
         }
 
         let results = bank.simulate_transactions(&txs);
-        info!("simulation results: {:?}", results);
 
         let mut last_bundle_index = 0;
         let mut is_success_bundle = true;
         let mut success_bundles = vec![];
 
         let mut success_txs = 0;
+
+        info!("try simulate txs count: {}", txs.len());
 
         results.into_iter().enumerate().for_each(|(i, result)| {
             let len_bundle = indexes_end_bundle[last_bundle_index];
