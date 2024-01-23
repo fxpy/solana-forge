@@ -17,6 +17,8 @@
 $ curl https://sh.rustup.rs -sSf | sh
 $ source $HOME/.cargo/env
 $ rustup component add rustfmt
+git clone https://github.com/solana-forge/solana.git --branch <TAGS> --single-branch
+
 ```
 
 When building the master branch, please make sure you are using the latest stable rust version by running:
