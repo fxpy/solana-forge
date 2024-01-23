@@ -4369,6 +4369,7 @@ impl Bank {
         &self,
         transactions: &[SanitizedTransaction],
     ) -> Vec<TransactionExecutionResult> {
+        assert!(self.is_frozen(), "simulation bank must be frozen");
         self.simulate_transactions_unchecked(transactions)
     }
 

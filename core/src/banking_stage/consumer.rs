@@ -507,7 +507,10 @@ impl Consumer {
             indexes_end_bundle.push(bundle.len());
         }
 
-        let results = bank.simulate_transactions(&txs);
+        let simulate_bank = bank.clone();
+        simulate_bank.freeze();
+
+        let results = simulate_bank.simulate_transactions(&txs);
 
         let mut last_bundle_index = 0;
         let mut is_success_bundle = true;
@@ -526,7 +529,7 @@ impl Consumer {
                 success_txs += 1;
             }
 
-            if i == (len_bundle - 1) {
+            if i == len_bundle {
                 if is_success_bundle {
                     success_bundles.push(bundles[last_bundle_index].clone());
                     is_success_bundle = false;
@@ -610,14 +613,14 @@ impl Consumer {
 
         let mut txs = vec![];
 
-        // for tx in added_txs.clone() {
-        //     txs.push(tx);
-        // }
+        for tx in added_txs.clone() {
+            txs.push(tx);
+        }
 
         for tx in sanitized_transactions {
-            // if !txs.contains(&tx) {
+            if !txs.contains(&tx) {
                 txs.push(tx.clone());
-            // }
+            }
         }
         
         let pre_results = std::iter::repeat(Ok(()));
