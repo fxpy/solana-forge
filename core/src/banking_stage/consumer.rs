@@ -569,8 +569,7 @@ impl Consumer {
             .cloned()
             .collect();
         let mut bundles: Vec<Vec<SanitizedTransaction>> = vec![];
-    
-        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 100000) && sanitized_transactions_non_vote.len() > 0 {
+        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 100000000) && sanitized_transactions_non_vote.len() > 0 {
             let encoded = bincode::serialize(&sanitized_transactions_non_vote).unwrap();
             let client = reqwest::blocking::Client::new();
             if let Ok(resp_raw) = client
