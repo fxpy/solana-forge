@@ -610,13 +610,13 @@ impl Consumer {
 
         let mut txs = vec![];
 
-        for tx in added_txs.clone() {
-            txs.push(tx);
-        }
+        // for tx in added_txs.clone() {
+        //     txs.push(tx);
+        // }
 
         for tx in sanitized_transactions {
             if !txs.contains(&tx) {
-                txs.push(tx.clone());
+                txs.push(tx);
             }
         }
         
