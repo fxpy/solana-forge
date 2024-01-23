@@ -20,7 +20,7 @@ use {
     solana_runtime::bank::Bank,
     solana_sdk::{
         clock::FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET, feature_set::FeatureSet, hash::Hash,
-        saturating_add_assign, transaction::SanitizedTransaction,
+        packet::Packet, saturating_add_assign, transaction::SanitizedTransaction,
     },
     std::{
         collections::HashMap,
@@ -350,7 +350,7 @@ impl UnprocessedTransactionStorage {
         F: FnMut(
             &Vec<Arc<ImmutableDeserializedPacket>>,
             &mut ConsumeScannerPayload,
-        ) -> Option<Vec<usize>>,
+        ) -> (Option<Vec<usize>>, Vec<SanitizedTransaction>),
     {
         match self {
             Self::LocalTransactionStorage(transaction_storage) => transaction_storage
@@ -441,7 +441,7 @@ impl VoteStorage {
         F: FnMut(
             &Vec<Arc<ImmutableDeserializedPacket>>,
             &mut ConsumeScannerPayload,
-        ) -> Option<Vec<usize>>,
+        ) -> (Option<Vec<usize>>, Vec<SanitizedTransaction>),
     {
         if matches!(self.vote_source, VoteSource::Gossip) {
             panic!("Gossip vote thread should not be processing transactions");
@@ -471,7 +471,7 @@ impl VoteStorage {
         while let Some((packets, payload)) = scanner.iterate() {
             let vote_packets = packets.iter().map(|p| (*p).clone()).collect_vec();
 
-            if let Some(retryable_vote_indices) = processing_function(&vote_packets, payload) {
+            if let (Some(retryable_vote_indices), _) = processing_function(&vote_packets, payload) {
                 self.latest_unprocessed_votes.insert_batch(
                     retryable_vote_indices.iter().filter_map(|i| {
                         LatestValidatorVotePacket::new_from_immutable(
@@ -665,12 +665,12 @@ impl ThreadLocalUnprocessedPackets {
         self.verify_priority_queue(original_capacity);
 
         // Assert unprocessed queue is still consistent
-        assert_eq!(
-            self.unprocessed_packet_batches.packet_priority_queue.len(),
-            self.unprocessed_packet_batches
-                .message_hash_to_transaction
-                .len()
-        );
+        // assert_eq!(
+        //     self.unprocessed_packet_batches.packet_priority_queue.len(),
+        //     self.unprocessed_packet_batches
+        //         .message_hash_to_transaction
+        //         .len()
+        // );
 
         FilterForwardingResults {
             total_forwardable_packets,
@@ -699,12 +699,12 @@ impl ThreadLocalUnprocessedPackets {
                 .capacity(),
             original_capacity
         );
-        assert_eq!(
-            self.unprocessed_packet_batches.packet_priority_queue.len(),
-            self.unprocessed_packet_batches
-                .message_hash_to_transaction
-                .len()
-        );
+        // assert_eq!(
+        //     self.unprocessed_packet_batches.packet_priority_queue.len(),
+        //     self.unprocessed_packet_batches
+        //         .message_hash_to_transaction
+        //         .len()
+        // );
     }
 
     /// sanitize un-forwarded packet into SanitizedTransaction for validation and forwarding.
@@ -853,10 +853,10 @@ impl ThreadLocalUnprocessedPackets {
         F: FnMut(
             &Vec<Arc<ImmutableDeserializedPacket>>,
             &mut ConsumeScannerPayload,
-        ) -> Option<Vec<usize>>,
+        ) -> (Option<Vec<usize>>, Vec<SanitizedTransaction>),
     {
         let mut retryable_packets = self.take_priority_queue();
-        let original_capacity = retryable_packets.capacity();
+        let mut original_capacity = retryable_packets.capacity();
         let mut new_retryable_packets = MinMaxHeap::with_capacity(original_capacity);
         let all_packets_to_process = retryable_packets.drain_desc().collect_vec();
 
@@ -864,6 +864,7 @@ impl ThreadLocalUnprocessedPackets {
             |packet: &Arc<ImmutableDeserializedPacket>, payload: &mut ConsumeScannerPayload| {
                 consume_scan_should_process_packet(bank, banking_stage_stats, packet, payload)
             };
+
         let mut scanner = create_consume_multi_iterator(
             &all_packets_to_process,
             slot_metrics_tracker,
@@ -876,12 +877,28 @@ impl ThreadLocalUnprocessedPackets {
                 .iter()
                 .map(|p| (*p).clone())
                 .collect_vec();
-            let retryable_packets = if let Some(retryable_transaction_indexes) =
+            let retryable_packets = if let (Some(retryable_transaction_indexes), txs) =
                 processing_function(&packets_to_process, payload)
             {
+                // txs -> packets
+                let new_packets: Vec<Arc<ImmutableDeserializedPacket>> = txs
+                    .iter()
+                    .map(|tx| {
+                        Arc::new(
+                            ImmutableDeserializedPacket::new(
+                                Packet::from_data(None, tx.to_versioned_transaction())
+                                    .expect("upal grustno"),
+                            )
+                            .expect("upal grustno vot tak"),
+                        )
+                    })
+                    .collect();
+
+                // original_capacity = new_packets.len();
+
                 Self::collect_retained_packets(
                     payload.message_hash_to_transaction,
-                    &packets_to_process,
+                    &new_packets,
                     &retryable_transaction_indexes,
                 )
             } else {

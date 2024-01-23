@@ -15,7 +15,7 @@ codecov = { repository = "solana-labs/solana", branch = "master", service = "git
 
 [dependencies]
 base64 = { workspace = true }
-bincode = { workspace = true }
+bincode.workspace = true
 bs58 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["default", "serde"] }
@@ -36,11 +36,13 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 rcgen = { workspace = true }
+reqwest.workspace = true
 rolling-file = { workspace = true }
 rustls = { workspace = true }
-serde = { workspace = true }
+serde.workspace = true
 serde_bytes = { workspace = true }
 serde_derive = { workspace = true }
+serde_json.workspace = true
 solana-accounts-db = { workspace = true }
 solana-bloom = { workspace = true }
 solana-client = { workspace = true }
