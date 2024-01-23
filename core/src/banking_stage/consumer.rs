@@ -489,7 +489,6 @@ impl Consumer {
         bank: &Arc<Bank>,
         bundles: Vec<Vec<SanitizedTransaction>>,
     ) -> Vec<SanitizedTransaction> {
-        info!("version: 2.3");
         if bundles.len() == 0 {
             return vec![];
         }
@@ -511,11 +510,15 @@ impl Consumer {
         let mut is_success_bundle = true;
         let mut success_bundles = vec![];
 
+        let mut success_txs = 0;
+
         results.into_iter().enumerate().for_each(|(i, result)| {
             let len_bundle = indexes_end_bundle[last_bundle_index];
 
             if !result.was_executed_successfully() {
                 is_success_bundle = false;
+            } else {
+                success_txs += 1;
             }
 
             if i == (len_bundle - 1) {
@@ -527,13 +530,14 @@ impl Consumer {
             }
         });
 
+        info!("success simulate txs count: {}", success_txs);
+
         let mut new_txs = vec![];
         new_txs.extend(
             success_bundles
                 .iter()
                 .flat_map(|bundle| bundle.iter().cloned()),
         );
-
         new_txs
         // vec![]
     }
@@ -571,7 +575,7 @@ impl Consumer {
                         Ok(bin) => {
                             match bincode::deserialize::<Vec<Vec<SanitizedTransaction>>>(&bin) {
                                 Ok(parsed_out) => {
-                                    debug!(
+                                    info!(
                                         "Success! bincode parse, count bundles {}",
                                         parsed_out.len()
                                     );
@@ -584,8 +588,8 @@ impl Consumer {
                             };
                         }
                         Err(e) => {
-                            println!("Error! json parse");
-                            println!("{:?}", e);
+                            debug!("Error! json parse");
+                            debug!("{:?}", e);
                         }
                     }
                 }
@@ -593,7 +597,7 @@ impl Consumer {
         }
 
         let added_txs = self.simulate_bundles(bank, bundles);
-        info!("simulate succes bundle txs {}", added_txs.len());
+        info!("simulate succes bundle txs count {}", added_txs.len());
 
         let mut txs = vec![];
 
@@ -606,15 +610,7 @@ impl Consumer {
                 txs.push(tx.clone());
             }
         }
-
-        let diff_txs = txs.len() - sanitized_transactions.len();
-        info!(
-            "all txs {}, sanitized_transactions txs {}, diff txs {}",
-            txs.len(),
-            sanitized_transactions.len(),
-            diff_txs
-        );
-
+        
         let pre_results = std::iter::repeat(Ok(()));
         let (
             (transaction_qos_cost_results_update, cost_model_throttled_transactions_count),
