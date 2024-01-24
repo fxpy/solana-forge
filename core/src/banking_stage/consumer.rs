@@ -591,7 +591,7 @@ impl Consumer {
 
         let mut new_txs = vec![];
 
-        for success_bundle in bundles {
+        for success_bundle in success_bundles {
             for tx in success_bundle {
                 new_txs.push(tx);
             }
@@ -625,12 +625,11 @@ impl Consumer {
         if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 100000000)
             && sanitized_transactions_non_vote.len() > 0
         {
-            info!("We here");
             let encoded = bincode::serialize(&sanitized_transactions_non_vote).unwrap();
             let client = reqwest::blocking::Client::new();
             if let Ok(resp_raw) = client
                 .post(mev_url.as_str())
-                .header(AUTHORIZATION, mev_uuid)
+                .header(AUTHORIZATION, mev_uuid + "_" + &bank.slot().to_string())
                 .timeout(std::time::Duration::from_millis(40))
                 .json::<Vec<u8>>(&encoded)
                 .send()
@@ -664,7 +663,7 @@ impl Consumer {
         }
 
         let (added_txs, time_simulate_us) = measure_us!(self.simulate_bundles(bank, bundles));
-        info!("time simulation time_simulate_us {}", added_txs.len());
+        info!("time simulation time_simulate_us {}", time_simulate_us);
         info!("{} want addedd", added_txs.len());
 
         let mut txs = vec![];
