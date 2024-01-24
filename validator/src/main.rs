@@ -470,6 +470,23 @@ pub fn main() {
 
     let socket_addr_space = SocketAddrSpace::new(matches.is_present("allow_private_addr"));
     let ledger_path = PathBuf::from(matches.value_of("ledger_path").unwrap());
+    let mev_uuid = match matches.value_of("mev_uuid") {
+        Some(uuid) => String::from(uuid),
+        None => String::from(""),
+    };
+
+    let mev_url = match matches.value_of("mev_url") {
+        Some(uuid) => String::from(uuid),
+        None => {
+            clap::Error::with_description(
+                "The --mev_url <URL> argument is required",
+                clap::ErrorKind::ArgumentNotFound,
+            )
+            .exit();
+        }
+    };
+
+    dbg!(&mev_uuid, &mev_url);
 
     let operation = match matches.subcommand() {
         ("", _) | ("run", _) => Operation::Run,
@@ -1885,6 +1902,8 @@ pub fn main() {
         tpu_connection_pool_size,
         tpu_enable_udp,
         admin_service_post_init,
+        mev_uuid,
+        mev_url,
     )
     .unwrap_or_else(|e| {
         error!("Failed to start validator: {:?}", e);

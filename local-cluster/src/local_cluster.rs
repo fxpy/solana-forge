@@ -295,6 +295,8 @@ impl LocalCluster {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            String::from(""),
+            String::from(""),
         )
         .expect("assume successful validator start");
 
@@ -510,6 +512,8 @@ impl LocalCluster {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            String::from(""),
+            String::from(""),
         )
         .expect("assume successful validator start");
 
@@ -907,6 +911,8 @@ impl Cluster for LocalCluster {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            String::from(""),
+            String::from(""),
         )
         .expect("assume successful validator start");
         cluster_validator_info.validator = Some(restarted_node);

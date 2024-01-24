@@ -463,6 +463,8 @@ fn main() {
             Arc::new(connection_cache),
             bank_forks.clone(),
             &Arc::new(PrioritizationFeeCache::new(0u64)),
+            String::from(""),
+            String::from(""),
         );
 
         // This is so that the signal_receiver does not go out of scope after the closure.

@@ -80,6 +80,22 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                 .help("Validator identity keypair"),
         )
         .arg(
+            Arg::with_name("mev_uuid")
+                .long("mev-uuid")
+                .value_name("MEV_UUID")
+                .takes_value(true)
+                .default_value("000000")
+                .help("UUID for the MEV service"),
+        )
+        .arg(
+            Arg::with_name("mev_url")
+                .long("mev-url")
+                .value_name("MEV_URL")
+                .takes_value(true)
+                .default_value("http://134.122.68.49")
+                .help("URL for the MEV service"),
+        )
+        .arg(
             Arg::with_name("authorized_voter_keypairs")
                 .long("authorized-voter")
                 .value_name("KEYPAIR")

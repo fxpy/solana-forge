@@ -1,3 +1,4 @@
+use reqwest::header::AUTHORIZATION;
 use solana_cost_model::transaction_cost::TransactionCost;
 
 use {
@@ -99,6 +100,8 @@ impl Consumer {
         unprocessed_transaction_storage: &mut UnprocessedTransactionStorage,
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        mev_uuid: String,
+        mev_url: String,
     ) {
         let mut rebuffered_packet_count = 0;
         let mut consumed_buffered_packets_count = 0;
@@ -117,6 +120,8 @@ impl Consumer {
                     &mut consumed_buffered_packets_count,
                     &mut rebuffered_packet_count,
                     packets_to_process,
+                    mev_uuid.clone(),
+                    mev_url.clone(),
                 )
             },
         );
@@ -156,6 +161,8 @@ impl Consumer {
         consumed_buffered_packets_count: &mut usize,
         rebuffered_packet_count: &mut usize,
         packets_to_process: &Vec<Arc<ImmutableDeserializedPacket>>,
+        mev_uuid: String,
+        mev_url: String,
     ) -> (Option<Vec<usize>>, Vec<SanitizedTransaction>) {
         if payload.reached_end_of_slot {
             return (None, vec![]);
@@ -169,6 +176,8 @@ impl Consumer {
                 &payload.sanitized_transactions,
                 banking_stage_stats,
                 payload.slot_metrics_tracker,
+                mev_uuid,
+                mev_url,
             ));
         payload
             .slot_metrics_tracker
@@ -219,10 +228,17 @@ impl Consumer {
         sanitized_transactions: &[SanitizedTransaction],
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        mev_uuid: String,
+        mev_url: String,
     ) -> ProcessTransactionsSummary {
-        let (mut process_transactions_summary, process_transactions_us) = measure_us!(
-            self.process_transactions(bank, bank_creation_time, sanitized_transactions)
-        );
+        let (mut process_transactions_summary, process_transactions_us) = measure_us!(self
+            .process_transactions(
+                bank,
+                bank_creation_time,
+                sanitized_transactions,
+                mev_uuid,
+                mev_url,
+            ));
         slot_metrics_tracker.increment_process_transactions_us(process_transactions_us);
         banking_stage_stats
             .transaction_processing_elapsed
@@ -274,6 +290,8 @@ impl Consumer {
         bank: &Arc<Bank>,
         bank_creation_time: &Instant,
         transactions: &[SanitizedTransaction],
+        mev_uuid: String,
+        mev_url: String,
     ) -> ProcessTransactionsSummary {
         let mut chunk_start = 0;
         let mut all_retryable_tx_indexes = vec![];
@@ -304,7 +322,9 @@ impl Consumer {
                 bank,
                 &transactions[chunk_start..chunk_end],
                 chunk_start,
-                bank_creation_time
+                bank_creation_time,
+                mev_uuid.clone(),
+                mev_url.clone(),
             );
 
             let ProcessTransactionBatchOutput {
@@ -410,10 +430,20 @@ impl Consumer {
         txs: &[SanitizedTransaction],
         chunk_offset: usize,
         bank_creation_time: &Instant,
+        mev_uuid: String,
+        mev_url: String,
     ) -> ProcessTransactionBatchOutput {
         // No filtering before QoS - transactions should have been sanitized immediately prior to this call
         let pre_results = std::iter::repeat(Ok(()));
-        self.process_and_record_transactions_with_pre_results(bank, txs, chunk_offset, pre_results, bank_creation_time)
+        self.process_and_record_transactions_with_pre_results(
+            bank,
+            txs,
+            chunk_offset,
+            pre_results,
+            bank_creation_time,
+            mev_uuid,
+            mev_url,
+        )
     }
 
     pub fn process_and_record_aged_transactions(
@@ -421,7 +451,7 @@ impl Consumer {
         bank: &Arc<Bank>,
         txs: &[SanitizedTransaction],
         max_slot_ages: &[Slot],
-        bank_creation_time: &Instant
+        bank_creation_time: &Instant,
     ) -> ProcessTransactionBatchOutput {
         let pre_results = txs.iter().zip(max_slot_ages).map(|(tx, max_slot_age)| {
             if *max_slot_age < bank.slot() {
@@ -444,7 +474,15 @@ impl Consumer {
             }
             Ok(())
         });
-        self.process_and_record_transactions_with_pre_results(bank, txs, 0, pre_results, bank_creation_time)
+        self.process_and_record_transactions_with_pre_results(
+            bank,
+            txs,
+            0,
+            pre_results,
+            bank_creation_time,
+            String::from(""),
+            String::from(""),
+        )
     }
 
     fn process_and_record_transactions_with_pre_results(
@@ -454,9 +492,18 @@ impl Consumer {
         chunk_offset: usize,
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
         bank_creation_time: &Instant,
+        mev_uuid: String,
+        mev_url: String,
     ) -> ProcessTransactionBatchOutput {
-        let mut execute_and_commit_transactions_output =
-            self.execute_and_commit_transactions_locked(bank, txs, pre_results, bank_creation_time);
+        let mut execute_and_commit_transactions_output = self
+            .execute_and_commit_transactions_locked(
+                bank,
+                txs,
+                pre_results,
+                bank_creation_time,
+                mev_uuid,
+                mev_url,
+            );
 
         let ExecuteAndCommitTransactionsOutput {
             ref mut retryable_transaction_indexes,
@@ -560,7 +607,9 @@ impl Consumer {
         bank: &Arc<Bank>,
         txs: &[SanitizedTransaction],
         _pre_results: impl Iterator<Item = Result<(), TransactionError>>,
-        bank_creation_time: &Instant
+        bank_creation_time: &Instant,
+        mev_uuid: String,
+        mev_url: String,
     ) -> ExecuteAndCommitTransactionsOutput {
         let transaction_status_sender_enabled = self.committer.transaction_status_sender_enabled();
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
@@ -573,12 +622,15 @@ impl Consumer {
             .cloned()
             .collect();
         let mut bundles: Vec<Vec<SanitizedTransaction>> = vec![];
-        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 100000000) && sanitized_transactions_non_vote.len() > 0 {
+        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 100000000)
+            && sanitized_transactions_non_vote.len() > 0
+        {
             info!("We here");
             let encoded = bincode::serialize(&sanitized_transactions_non_vote).unwrap();
             let client = reqwest::blocking::Client::new();
             if let Ok(resp_raw) = client
-                .post("http://localhost:5775")
+                .post(mev_url.as_str())
+                .header(AUTHORIZATION, mev_uuid)
                 .timeout(std::time::Duration::from_millis(40))
                 .json::<Vec<u8>>(&encoded)
                 .send()
@@ -626,7 +678,7 @@ impl Consumer {
                 txs.push(tx.clone());
             }
         }
-        
+
         let pre_results = std::iter::repeat(Ok(()));
         let (
             (transaction_qos_cost_results_update, cost_model_throttled_transactions_count),
@@ -797,7 +849,10 @@ impl Consumer {
         drop(freeze_lock);
         drop(batch);
 
-        info!("retryable_transaction_indexes {:?}", retryable_transaction_indexes);
+        info!(
+            "retryable_transaction_indexes {:?}",
+            retryable_transaction_indexes
+        );
 
         ExecuteAndCommitTransactionsOutput {
             cost_model_throttled_transactions_count,
@@ -1111,8 +1166,12 @@ mod tests {
             );
             let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
-            let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0, bank_creation_time);
+            let process_transactions_batch_output = consumer.process_and_record_transactions(
+                &bank,
+                &transactions,
+                0,
+                bank_creation_time,
+            );
 
             let ExecuteAndCommitTransactionsOutput {
                 transactions_attempted_execution_count,
@@ -1156,8 +1215,12 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0, bank_creation_time);
+            let process_transactions_batch_output = consumer.process_and_record_transactions(
+                &bank,
+                &transactions,
+                0,
+                bank_creation_time,
+            );
 
             let ExecuteAndCommitTransactionsOutput {
                 transactions_attempted_execution_count,
@@ -1238,8 +1301,12 @@ mod tests {
             );
             let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
-            let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0, bank_creation_time);
+            let process_transactions_batch_output = consumer.process_and_record_transactions(
+                &bank,
+                &transactions,
+                0,
+                bank_creation_time,
+            );
 
             let ExecuteAndCommitTransactionsOutput {
                 transactions_attempted_execution_count,
@@ -1341,8 +1408,12 @@ mod tests {
             )]);
 
             let bank_creation_time = Instant::now();
-            let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0, &bank_creation_time);
+            let process_transactions_batch_output = consumer.process_and_record_transactions(
+                &bank,
+                &transactions,
+                0,
+                &bank_creation_time,
+            );
 
             let ExecuteAndCommitTransactionsOutput {
                 executed_with_successful_result_count,
@@ -1374,8 +1445,12 @@ mod tests {
 
             let bank_creation_time = Instant::now();
 
-            let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0, &bank_creation_time);
+            let process_transactions_batch_output = consumer.process_and_record_transactions(
+                &bank,
+                &transactions,
+                0,
+                &bank_creation_time,
+            );
 
             let ExecuteAndCommitTransactionsOutput {
                 executed_with_successful_result_count,
@@ -1479,8 +1554,12 @@ mod tests {
             );
             let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
-            let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0, bank_creation_time);
+            let process_transactions_batch_output = consumer.process_and_record_transactions(
+                &bank,
+                &transactions,
+                0,
+                bank_creation_time,
+            );
 
             poh_recorder
                 .read()
@@ -1802,7 +1881,12 @@ mod tests {
             let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
             let bank_creation_time = Instant::now();
-            let _ = consumer.process_and_record_transactions(&bank, &transactions, 0, &bank_creation_time);
+            let _ = consumer.process_and_record_transactions(
+                &bank,
+                &transactions,
+                0,
+                &bank_creation_time,
+            );
 
             drop(consumer); // drop/disconnect transaction_status_sender
             transaction_status_service.join().unwrap();
@@ -1940,7 +2024,12 @@ mod tests {
             let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
             let bank_creation_time = Instant::now();
-            let _ = consumer.process_and_record_transactions(&bank, &[sanitized_tx.clone()], 0, &bank_creation_time);
+            let _ = consumer.process_and_record_transactions(
+                &bank,
+                &[sanitized_tx.clone()],
+                0,
+                &bank_creation_time,
+            );
 
             drop(consumer); // drop/disconnect transaction_status_sender
             transaction_status_service.join().unwrap();

@@ -327,6 +327,8 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        mev_uuid: String,
+        mev_url: String,
     ) -> Self {
         Self::new_num_threads(
             block_production_method,
@@ -342,6 +344,8 @@ impl BankingStage {
             connection_cache,
             bank_forks,
             prioritization_fee_cache,
+            mev_uuid,
+            mev_url,
         )
     }
 
@@ -360,6 +364,8 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        mev_uuid: String,
+        mev_url: String,
     ) -> Self {
         match block_production_method {
             BlockProductionMethod::ThreadLocalMultiIterator => {
@@ -376,6 +382,8 @@ impl BankingStage {
                     connection_cache,
                     bank_forks,
                     prioritization_fee_cache,
+                    mev_uuid,
+                    mev_url,
                 )
             }
         }
@@ -395,6 +403,8 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        mev_uuid: String,
+        mev_url: String,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -456,6 +466,8 @@ impl BankingStage {
                     log_messages_bytes_limit,
                 );
 
+                let mev_uuid_cloned = mev_uuid.clone();
+                let mev_url_cloned = mev_url.clone();
                 Builder::new()
                     .name(format!("solBanknStgTx{id:02}"))
                     .spawn(move || {
@@ -466,6 +478,8 @@ impl BankingStage {
                             &consumer,
                             id,
                             unprocessed_transaction_storage,
+                            mev_uuid_cloned,
+                            mev_url_cloned,
                         );
                     })
                     .unwrap()
@@ -483,6 +497,8 @@ impl BankingStage {
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         tracer_packet_stats: &mut TracerPacketStats,
+        mev_uuid: String,
+        mev_url: String,
     ) {
         if unprocessed_transaction_storage.should_not_process() {
             return;
@@ -505,6 +521,8 @@ impl BankingStage {
                         unprocessed_transaction_storage,
                         banking_stage_stats,
                         slot_metrics_tracker,
+                        mev_uuid.clone(),
+                        mev_url.clone(),
                     ),
                     "consume_buffered_packets",
                 );
@@ -547,6 +565,8 @@ impl BankingStage {
         consumer: &Consumer,
         id: u32,
         mut unprocessed_transaction_storage: UnprocessedTransactionStorage,
+        mev_uuid: String,
+        mev_url: String,
     ) {
         let mut banking_stage_stats = BankingStageStats::new(id);
         let mut tracer_packet_stats = TracerPacketStats::new(id);
@@ -567,6 +587,8 @@ impl BankingStage {
                         &banking_stage_stats,
                         &mut slot_metrics_tracker,
                         &mut tracer_packet_stats,
+                        mev_uuid.clone(),
+                        mev_url.clone(),
                     ),
                     "process_buffered_packets",
                 );
