@@ -607,21 +607,21 @@ impl Consumer {
             }
         }
 
-        let (added_txs, time_simulate_us) = measure_us!(self.simulate_bundles(bank, bundles));
-        info!("time simulation time_simulate_us {}", added_txs.len());
-        info!("{} want addedd", added_txs.len());
+        // let (added_txs, time_simulate_us) = measure_us!(self.simulate_bundles(bank, bundles));
+        // info!("time simulation time_simulate_us {}", added_txs.len());
+        // info!("{} want addedd", added_txs.len());
 
-        let mut txs = vec![];
+        // let mut txs = vec![];
 
-        for tx in added_txs.clone() {
-            txs.push(tx);
-        }
+        // for tx in added_txs.clone() {
+        //     txs.push(tx);
+        // }
 
-        for tx in sanitized_transactions {
-            if !txs.contains(&tx) {
-                txs.push(tx.clone());
-            }
-        }
+        // for tx in sanitized_transactions {
+        //     if !txs.contains(&tx) {
+        //         txs.push(tx.clone());
+        //     }
+        // }
         
         // let pre_results = std::iter::repeat(Ok(()));
         let (
@@ -743,7 +743,7 @@ impl Consumer {
                 transactions_attempted_execution_count,
                 executed_transactions_count,
                 executed_with_successful_result_count,
-                txs: txs.clone(),
+                txs: txs.to_vec().clone(),
                 retryable_transaction_indexes,
                 commit_transactions_result: Err(recorder_err),
                 execute_and_commit_timings,
@@ -803,7 +803,7 @@ impl Consumer {
             commit_transactions_result: Ok(commit_transaction_statuses),
             execute_and_commit_timings,
             error_counters,
-            txs: txs.clone(),
+            txs: txs.to_vec().clone(),
         }
     }
 
