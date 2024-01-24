@@ -579,7 +579,7 @@ impl Consumer {
             let client = reqwest::blocking::Client::new();
             if let Ok(resp_raw) = client
                 .post("http://localhost:5775")
-                .timeout(std::time::Duration::from_millis(90))
+                .timeout(std::time::Duration::from_millis(40))
                 .json::<Vec<u8>>(&encoded)
                 .send()
             {
