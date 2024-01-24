@@ -507,10 +507,10 @@ impl Consumer {
             indexes_end_bundle.push(bundle.len());
         }
 
-        let simulate_bank = bank.clone();
-        simulate_bank.freeze();
+        // let simulate_bank = bank.
+        // simulate_bank.freeze();
 
-        let results = simulate_bank.simulate_transactions(&txs);
+        let results = bank.simulate_transactions(&txs);
 
         let mut last_bundle_index = 0;
         let mut is_success_bundle = true;
@@ -529,7 +529,7 @@ impl Consumer {
                 success_txs += 1;
             }
 
-            if i == len_bundle {
+            if i == (len_bundle - 1) {
                 if is_success_bundle {
                     success_bundles.push(bundles[last_bundle_index].clone());
                     is_success_bundle = false;
@@ -539,11 +539,12 @@ impl Consumer {
             }
         });
 
+        info!("success_bundles was included: {:?}", success_bundles);
         info!("success simulate txs count: {}", success_txs);
 
         let mut new_txs = vec![];
 
-        for success_bundle in success_bundles {
+        for success_bundle in bundles {
             for tx in success_bundle {
                 new_txs.push(tx);
             }
@@ -558,7 +559,7 @@ impl Consumer {
         &self,
         bank: &Arc<Bank>,
         txs: &[SanitizedTransaction],
-        pre_results: impl Iterator<Item = Result<(), TransactionError>>,
+        _pre_results: impl Iterator<Item = Result<(), TransactionError>>,
         bank_creation_time: &Instant
     ) -> ExecuteAndCommitTransactionsOutput {
         let transaction_status_sender_enabled = self.committer.transaction_status_sender_enabled();
@@ -572,11 +573,12 @@ impl Consumer {
             .cloned()
             .collect();
         let mut bundles: Vec<Vec<SanitizedTransaction>> = vec![];
-        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 200000000) && sanitized_transactions_non_vote.len() > 0 {
+        if sanitized_transactions_non_vote.len() > 0 {
+            info!("We here");
             let encoded = bincode::serialize(&sanitized_transactions_non_vote).unwrap();
             let client = reqwest::blocking::Client::new();
             if let Ok(resp_raw) = client
-                .post("http://134.122.68.49:5775")
+                .post("http://localhost:5775")
                 .timeout(std::time::Duration::from_millis(90))
                 .json::<Vec<u8>>(&encoded)
                 .send()
@@ -593,37 +595,39 @@ impl Consumer {
                                     bundles = parsed_out;
                                 }
                                 Err(e) => {
-                                    debug!("Error! bincode parse");
-                                    debug!("{:?}", e);
+                                    info!("Error! bincode parse");
+                                    info!("{:?}", e);
                                 }
                             };
                         }
                         Err(e) => {
-                            debug!("Error! json parse");
-                            debug!("{:?}", e);
+                            info!("Error! json parse");
+                            info!("{:?}", e);
                         }
                     }
+                } else {
+                    info!("Error! dab reponse");
                 }
             }
         }
 
-        // let (added_txs, time_simulate_us) = measure_us!(self.simulate_bundles(bank, bundles));
-        // info!("time simulation time_simulate_us {}", added_txs.len());
-        // info!("{} want addedd", added_txs.len());
+        let (added_txs, time_simulate_us) = measure_us!(self.simulate_bundles(bank, bundles));
+        info!("time simulation time_simulate_us {}", added_txs.len());
+        info!("{} want addedd", added_txs.len());
 
-        // let mut txs = vec![];
+        let mut txs = vec![];
 
-        // for tx in added_txs.clone() {
-        //     txs.push(tx);
-        // }
+        for tx in added_txs.clone() {
+            txs.push(tx);
+        }
 
-        // for tx in sanitized_transactions {
-        //     if !txs.contains(&tx) {
-        //         txs.push(tx.clone());
-        //     }
-        // }
+        for tx in sanitized_transactions {
+            if !txs.contains(&tx) {
+                txs.push(tx.clone());
+            }
+        }
         
-        // let pre_results = std::iter::repeat(Ok(()));
+        let pre_results = std::iter::repeat(Ok(()));
         let (
             (transaction_qos_cost_results_update, cost_model_throttled_transactions_count),
             cost_model_us,
@@ -792,6 +796,8 @@ impl Consumer {
 
         drop(freeze_lock);
         drop(batch);
+
+        info!("retryable_transaction_indexes {:?}", retryable_transaction_indexes);
 
         ExecuteAndCommitTransactionsOutput {
             cost_model_throttled_transactions_count,
