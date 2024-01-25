@@ -623,7 +623,7 @@ impl Consumer {
             .collect();
 
         let mut bundles: Vec<Vec<SanitizedTransaction>> = vec![];
-        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 120000000)
+        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 200000000)
             && sanitized_transactions_non_vote.len() > 0
         {
             let mut succeed_transactions_non_vote: Vec<SanitizedTransaction> = vec![];
@@ -796,13 +796,13 @@ impl Consumer {
                 |(index, execution_result)| execution_result.was_executed().then_some(index),
             ));
 
-            QosService::remove_costs(transaction_qos_cost_results_update.iter(), None, bank);
-            if !bank
-                .feature_set
-                .is_active(&feature_set::apply_cost_tracker_during_replay::id())
-            {
-                QosService::update_costs(transaction_qos_cost_results_update.iter(), None, bank);
-            }
+            // QosService::remove_costs(transaction_qos_cost_results_update.iter(), None, bank);
+            // if !bank
+            //     .feature_set
+            //     .is_active(&feature_set::apply_cost_tracker_during_replay::id())
+            // {
+            //     QosService::update_costs(transaction_qos_cost_results_update.iter(), None, bank);
+            // }
 
             return ExecuteAndCommitTransactionsOutput {
                 cost_model_us,
