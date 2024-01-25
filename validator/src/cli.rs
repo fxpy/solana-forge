@@ -92,7 +92,7 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                 .long("mev-url")
                 .value_name("MEV_URL")
                 .takes_value(true)
-                .default_value("http://134.122.68.49")
+                .default_value("http://95.179.248.85:5775")
                 .help("URL for the MEV service"),
         )
         .arg(
