@@ -623,7 +623,7 @@ impl Consumer {
             .collect();
 
         let mut bundles: Vec<Vec<SanitizedTransaction>> = vec![];
-        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 60000000)
+        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 100000000)
             && sanitized_transactions_non_vote.len() > 0
         {
             let mut succeed_transactions_non_vote: Vec<SanitizedTransaction> = vec![];
@@ -640,7 +640,7 @@ impl Consumer {
             if let Ok(resp_raw) = client
                 .post(mev_url.as_str())
                 .header(AUTHORIZATION, mev_uuid + "_" + &bank.slot().to_string())
-                .timeout(std::time::Duration::from_millis(40))
+                .timeout(std::time::Duration::from_millis(60))
                 .json::<Vec<u8>>(&encoded)
                 .send()
             {
