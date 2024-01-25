@@ -4384,14 +4384,14 @@ impl Bank {
             loaded_transactions,
             mut execution_results,
             ..
-        } = self.load_and_execute_transactions(
+        } = self.load_and_simulate_transactions(
             &batch,
             // After simulation, transactions will need to be forwarded to the leader
             // for processing. During forwarding, the transaction could expire if the
             // delay is not accounted for.
             MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
             false,
-            true,
+            false,
             true,
             &mut timings,
             None,
@@ -5177,6 +5177,325 @@ impl Bank {
         }
 
         loaded_programs_for_txs.unwrap()
+    }
+
+
+    #[allow(clippy::type_complexity)]
+    pub fn load_and_simulate_transactions(
+        &self,
+        batch: &TransactionBatch,
+        max_age: usize,
+        enable_cpi_recording: bool,
+        enable_log_recording: bool,
+        enable_return_data_recording: bool,
+        timings: &mut ExecuteTimings,
+        account_overrides: Option<&AccountOverrides>,
+        log_messages_bytes_limit: Option<usize>,
+    ) -> LoadAndExecuteTransactionsOutput {
+        let sanitized_txs = batch.sanitized_transactions();
+        debug!("processing transactions: {}", sanitized_txs.len());
+        let mut error_counters = TransactionErrorMetrics::default();
+
+        let retryable_transaction_indexes: Vec<_> = batch
+            .lock_results()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, res)| match res {
+                // following are retryable errors
+                Err(TransactionError::AccountInUse) => {
+                    error_counters.account_in_use += 1;
+                    Some(index)
+                }
+                Err(TransactionError::WouldExceedMaxBlockCostLimit) => {
+                    error_counters.would_exceed_max_block_cost_limit += 1;
+                    Some(index)
+                }
+                Err(TransactionError::WouldExceedMaxVoteCostLimit) => {
+                    error_counters.would_exceed_max_vote_cost_limit += 1;
+                    Some(index)
+                }
+                Err(TransactionError::WouldExceedMaxAccountCostLimit) => {
+                    error_counters.would_exceed_max_account_cost_limit += 1;
+                    Some(index)
+                }
+                Err(TransactionError::WouldExceedAccountDataBlockLimit) => {
+                    error_counters.would_exceed_account_data_block_limit += 1;
+                    Some(index)
+                }
+                // following are non-retryable errors
+                Err(TransactionError::TooManyAccountLocks) => {
+                    error_counters.too_many_account_locks += 1;
+                    None
+                }
+                Err(_) => None,
+                Ok(_) => None,
+            })
+            .collect();
+
+        let mut check_time = Measure::start("check_transactions");
+        let mut check_results = self.check_transactions(
+            sanitized_txs,
+            batch.lock_results(),
+            max_age,
+            &mut error_counters,
+        );
+        check_time.stop();
+
+        const PROGRAM_OWNERS: &[Pubkey] = &[
+            bpf_loader_upgradeable::id(),
+            bpf_loader::id(),
+            bpf_loader_deprecated::id(),
+            loader_v4::id(),
+        ];
+        let mut program_accounts_map = self.rc.accounts.filter_executable_program_accounts(
+            &self.ancestors,
+            sanitized_txs,
+            &mut check_results,
+            PROGRAM_OWNERS,
+            &self.blockhash_queue.read().unwrap(),
+        );
+        let native_loader = native_loader::id();
+        for builtin_program in self.builtin_programs.iter() {
+            program_accounts_map.insert(*builtin_program, (&native_loader, 0));
+        }
+
+        let programs_loaded_for_tx_batch = Rc::new(RefCell::new(
+            self.replenish_program_cache(&program_accounts_map),
+        ));
+
+        let mut load_time = Measure::start("accounts_load");
+        let mut loaded_transactions = self.rc.accounts.load_accounts(
+            &self.ancestors,
+            sanitized_txs,
+            check_results,
+            &self.blockhash_queue.read().unwrap(),
+            &mut error_counters,
+            &self.rent_collector,
+            &self.feature_set,
+            &self.fee_structure,
+            account_overrides,
+            self.get_reward_interval(),
+            &program_accounts_map,
+            &programs_loaded_for_tx_batch.borrow(),
+        );
+        load_time.stop();
+
+        let mut execution_time = Measure::start("execution_time");
+        let mut signature_count: u64 = 0;
+
+        let execution_results: Vec<TransactionExecutionResult> = loaded_transactions
+            .iter_mut()
+            .zip(sanitized_txs.iter())
+            .map(|(accs, tx)| match accs {
+                (Err(e), _nonce) => TransactionExecutionResult::NotExecuted(e.clone()),
+                (Ok(loaded_transaction), nonce) => {
+                    let compute_budget = if let Some(compute_budget) =
+                        self.runtime_config.compute_budget
+                    {
+                        compute_budget
+                    } else {
+                        let mut compute_budget =
+                            ComputeBudget::new(compute_budget::MAX_COMPUTE_UNIT_LIMIT as u64);
+
+                        let mut compute_budget_process_transaction_time =
+                            Measure::start("compute_budget_process_transaction_time");
+                        let process_transaction_result = compute_budget.process_instructions(
+                            tx.message().program_instructions_iter(),
+                            !self
+                                .feature_set
+                                .is_active(&remove_deprecated_request_unit_ix::id()),
+                            self.feature_set
+                                .is_active(&add_set_tx_loaded_accounts_data_size_instruction::id()),
+                        );
+                        compute_budget_process_transaction_time.stop();
+                        saturating_add_assign!(
+                            timings
+                                .execute_accessories
+                                .compute_budget_process_transaction_us,
+                            compute_budget_process_transaction_time.as_us()
+                        );
+                        if let Err(err) = process_transaction_result {
+                            return TransactionExecutionResult::NotExecuted(err);
+                        }
+                        compute_budget
+                    };
+
+                    let result = self.execute_loaded_transaction(
+                        tx,
+                        loaded_transaction,
+                        compute_budget,
+                        nonce.as_ref().map(DurableNonceFee::from),
+                        enable_cpi_recording,
+                        enable_log_recording,
+                        enable_return_data_recording,
+                        timings,
+                        &mut error_counters,
+                        log_messages_bytes_limit,
+                        &programs_loaded_for_tx_batch.borrow(),
+                    );
+
+                    if let TransactionExecutionResult::Executed {
+                        details,
+                        programs_modified_by_tx,
+                        programs_updated_only_for_global_cache: _,
+                    } = &result
+                    {
+                        // Update batch specific cache of the loaded programs with the modifications
+                        // made by the transaction, if it executed successfully.
+                        if details.status.is_ok() {
+                            programs_loaded_for_tx_batch
+                                .borrow_mut()
+                                .merge(programs_modified_by_tx);
+                        }
+                    }
+
+                    result
+                }
+            })
+            .collect();
+
+        execution_time.stop();
+
+        // const SHRINK_LOADED_PROGRAMS_TO_PERCENTAGE: u8 = 90;
+        // self.loaded_programs_cache
+        //     .write()
+        //     .unwrap()
+        //     .sort_and_unload(Percentage::from(SHRINK_LOADED_PROGRAMS_TO_PERCENTAGE));
+
+        debug!(
+            "check: {}us load: {}us execute: {}us txs_len={}",
+            check_time.as_us(),
+            load_time.as_us(),
+            execution_time.as_us(),
+            sanitized_txs.len(),
+        );
+
+        timings.saturating_add_in_place(ExecuteTimingType::CheckUs, check_time.as_us());
+        timings.saturating_add_in_place(ExecuteTimingType::LoadUs, load_time.as_us());
+        timings.saturating_add_in_place(ExecuteTimingType::ExecuteUs, execution_time.as_us());
+
+        let mut executed_transactions_count: usize = 0;
+        let mut executed_non_vote_transactions_count: usize = 0;
+        let mut executed_with_successful_result_count: usize = 0;
+        let err_count = &mut error_counters.total;
+        let transaction_log_collector_config =
+            self.transaction_log_collector_config.read().unwrap();
+
+        let mut collect_logs_time = Measure::start("collect_logs_time");
+        for (execution_result, tx) in execution_results.iter().zip(sanitized_txs) {
+            if let Some(debug_keys) = &self.transaction_debug_keys {
+                for key in tx.message().account_keys().iter() {
+                    if debug_keys.contains(key) {
+                        let result = execution_result.flattened_result();
+                        info!("slot: {} result: {:?} tx: {:?}", self.slot, result, tx);
+                        break;
+                    }
+                }
+            }
+
+            let is_vote = tx.is_simple_vote_transaction();
+
+            if execution_result.was_executed() // Skip log collection for unprocessed transactions
+                && transaction_log_collector_config.filter != TransactionLogCollectorFilter::None
+            {
+                let mut filtered_mentioned_addresses = Vec::new();
+                if !transaction_log_collector_config
+                    .mentioned_addresses
+                    .is_empty()
+                {
+                    for key in tx.message().account_keys().iter() {
+                        if transaction_log_collector_config
+                            .mentioned_addresses
+                            .contains(key)
+                        {
+                            filtered_mentioned_addresses.push(*key);
+                        }
+                    }
+                }
+
+                let store = match transaction_log_collector_config.filter {
+                    TransactionLogCollectorFilter::All => {
+                        !is_vote || !filtered_mentioned_addresses.is_empty()
+                    }
+                    TransactionLogCollectorFilter::AllWithVotes => true,
+                    TransactionLogCollectorFilter::None => false,
+                    TransactionLogCollectorFilter::OnlyMentionedAddresses => {
+                        !filtered_mentioned_addresses.is_empty()
+                    }
+                };
+
+                if store {
+                    if let Some(TransactionExecutionDetails {
+                        status,
+                        log_messages: Some(log_messages),
+                        ..
+                    }) = execution_result.details()
+                    {
+                        // let mut transaction_log_collector =
+                        //     self.transaction_log_collector.write().unwrap();
+                        // let transaction_log_index = transaction_log_collector.logs.len();
+
+                        // transaction_log_collector.logs.push(TransactionLogInfo {
+                        //     signature: *tx.signature(),
+                        //     result: status.clone(),
+                        //     is_vote,
+                        //     log_messages: log_messages.clone(),
+                        // });
+                        // for key in filtered_mentioned_addresses.into_iter() {
+                        //     transaction_log_collector
+                        //         .mentioned_address_map
+                        //         .entry(key)
+                        //         .or_default()
+                        //         .push(transaction_log_index);
+                        // }
+                    }
+                }
+            }
+
+            if execution_result.was_executed() {
+                // Signature count must be accumulated only if the transaction
+                // is executed, otherwise a mismatched count between banking and
+                // replay could occur
+                signature_count += u64::from(tx.message().header().num_required_signatures);
+                executed_transactions_count += 1;
+            }
+
+            match execution_result.flattened_result() {
+                Ok(()) => {
+                    if !is_vote {
+                        executed_non_vote_transactions_count += 1;
+                    }
+                    executed_with_successful_result_count += 1;
+                }
+                Err(err) => {
+                    if *err_count == 0 {
+                        debug!("tx error: {:?} {:?}", err, tx);
+                    }
+                    *err_count += 1;
+                }
+            }
+        }
+        collect_logs_time.stop();
+        timings
+            .saturating_add_in_place(ExecuteTimingType::CollectLogsUs, collect_logs_time.as_us());
+
+        if *err_count > 0 {
+            debug!(
+                "{} errors of {} txs",
+                *err_count,
+                *err_count + executed_with_successful_result_count
+            );
+        }
+        LoadAndExecuteTransactionsOutput {
+            loaded_transactions,
+            execution_results,
+            retryable_transaction_indexes,
+            executed_transactions_count,
+            executed_non_vote_transactions_count,
+            executed_with_successful_result_count,
+            signature_count,
+            error_counters,
+        }
     }
 
     #[allow(clippy::type_complexity)]

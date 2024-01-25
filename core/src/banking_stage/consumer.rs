@@ -1,5 +1,6 @@
 use reqwest::header::AUTHORIZATION;
 use solana_cost_model::transaction_cost::TransactionCost;
+use solana_runtime::bank_client;
 
 use {
     super::{
@@ -627,13 +628,22 @@ impl Consumer {
             && sanitized_transactions_non_vote.len() > 0
         {
             let mut succeed_transactions_non_vote: Vec<SanitizedTransaction> = vec![];
+            // let mut bank = bank.
             let results = bank.simulate_transactions(&sanitized_transactions_non_vote);
-             results.clone().into_iter().enumerate().for_each(|(i, result)| {
-                if result.was_executed_successfully() {
-                    succeed_transactions_non_vote.push(sanitized_transactions_non_vote[i].clone())
-                }
-            });
-            info!("succeed_transactions_non_vote count {}", succeed_transactions_non_vote.len());
+            results
+                .clone()
+                .into_iter()
+                .enumerate()
+                .for_each(|(i, result)| {
+                    if result.was_executed_successfully() {
+                        succeed_transactions_non_vote
+                            .push(sanitized_transactions_non_vote[i].clone())
+                    }
+                });
+            info!(
+                "succeed_transactions_non_vote count {}",
+                succeed_transactions_non_vote.len()
+            );
 
             if succeed_transactions_non_vote.len() > 0 {
                 let encoded = bincode::serialize(&succeed_transactions_non_vote).unwrap();
