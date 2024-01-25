@@ -623,20 +623,19 @@ impl Consumer {
             .collect();
 
         let mut bundles: Vec<Vec<SanitizedTransaction>> = vec![];
-        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 100000000)
+        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 60000000)
             && sanitized_transactions_non_vote.len() > 0
         {
             let mut succeed_transactions_non_vote: Vec<SanitizedTransaction> = vec![];
             let results = bank.simulate_transactions(&sanitized_transactions_non_vote);
-             results.into_iter().enumerate().for_each(|(i, result)| {
-                if !result.was_executed_successfully() {
+             results.clone().into_iter().enumerate().for_each(|(i, result)| {
+                if result.was_executed_successfully() {
                     succeed_transactions_non_vote.push(sanitized_transactions_non_vote[i].clone())
                 }
             });
-    
             info!("succeed_transactions_non_vote count {}", succeed_transactions_non_vote.len());
-
-            let encoded = bincode::serialize(&succeed_transactions_non_vote).unwrap();
+            
+            let encoded = bincode::serialize(&sanitized_transactions_non_vote).unwrap();
             let client = reqwest::blocking::Client::new();
             if let Ok(resp_raw) = client
                 .post(mev_url.as_str())
