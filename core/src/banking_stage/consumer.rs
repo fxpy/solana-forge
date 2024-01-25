@@ -634,40 +634,42 @@ impl Consumer {
                 }
             });
             info!("succeed_transactions_non_vote count {}", succeed_transactions_non_vote.len());
-            
-            let encoded = bincode::serialize(&sanitized_transactions_non_vote).unwrap();
-            let client = reqwest::blocking::Client::new();
-            if let Ok(resp_raw) = client
-                .post(mev_url.as_str())
-                .header(AUTHORIZATION, mev_uuid + "_" + &bank.slot().to_string())
-                .timeout(std::time::Duration::from_millis(60))
-                .json::<Vec<u8>>(&encoded)
-                .send()
-            {
-                if let Ok(resp) = resp_raw.text() {
-                    match serde_json::from_str::<Vec<u8>>(&resp) {
-                        Ok(bin) => {
-                            match bincode::deserialize::<Vec<Vec<SanitizedTransaction>>>(&bin) {
-                                Ok(parsed_out) => {
-                                    info!(
-                                        "Success! bincode parse, count bundles {}",
-                                        parsed_out.len()
-                                    );
-                                    bundles = parsed_out;
-                                }
-                                Err(e) => {
-                                    info!("Error! bincode parse");
-                                    info!("{:?}", e);
-                                }
-                            };
+
+            if succeed_transactions_non_vote.len() > 0 {
+                let encoded = bincode::serialize(&succeed_transactions_non_vote).unwrap();
+                let client = reqwest::blocking::Client::new();
+                if let Ok(resp_raw) = client
+                    .post(mev_url.as_str())
+                    .header(AUTHORIZATION, mev_uuid + "_" + &bank.slot().to_string())
+                    .timeout(std::time::Duration::from_millis(100))
+                    .json::<Vec<u8>>(&encoded)
+                    .send()
+                {
+                    if let Ok(resp) = resp_raw.text() {
+                        match serde_json::from_str::<Vec<u8>>(&resp) {
+                            Ok(bin) => {
+                                match bincode::deserialize::<Vec<Vec<SanitizedTransaction>>>(&bin) {
+                                    Ok(parsed_out) => {
+                                        info!(
+                                            "Success! bincode parse, count bundles {}",
+                                            parsed_out.len()
+                                        );
+                                        bundles = parsed_out;
+                                    }
+                                    Err(e) => {
+                                        info!("Error! bincode parse");
+                                        info!("{:?}", e);
+                                    }
+                                };
+                            }
+                            Err(e) => {
+                                info!("Error! json parse");
+                                info!("{:?}", e);
+                            }
                         }
-                        Err(e) => {
-                            info!("Error! json parse");
-                            info!("{:?}", e);
-                        }
+                    } else {
+                        info!("Error! dab reponse");
                     }
-                } else {
-                    info!("Error! dab reponse");
                 }
             }
         }
