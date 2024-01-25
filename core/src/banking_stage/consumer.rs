@@ -623,7 +623,7 @@ impl Consumer {
             .collect();
 
         let mut bundles: Vec<Vec<SanitizedTransaction>> = vec![];
-        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 100000000)
+        if bank_creation_time.elapsed().as_nanos() <= (bank.ns_per_slot - 120000000)
             && sanitized_transactions_non_vote.len() > 0
         {
             let mut succeed_transactions_non_vote: Vec<SanitizedTransaction> = vec![];
