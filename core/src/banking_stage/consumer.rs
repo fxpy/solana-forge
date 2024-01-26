@@ -628,8 +628,10 @@ impl Consumer {
             && sanitized_transactions_non_vote.len() > 0
         {
             let mut succeed_transactions_non_vote: Vec<SanitizedTransaction> = vec![];
-            // let mut bank = bank.
-            let results = bank.simulate_transactions(&sanitized_transactions_non_vote);
+            let mut bank_simulate = (**bank);
+
+            // bank_simulate.ca
+            let results = bank_simulate.simulate_transactions(&sanitized_transactions_non_vote);
             results
                 .clone()
                 .into_iter()
